@@ -26,6 +26,13 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
 
+import java.util.concurrent.AbstractExecutorService;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
 import org.teiid.jdbc.TeiidDataSource;
 import org.teiid.jdbc.TeiidStatement;
 
@@ -38,43 +45,52 @@ public class JDBCClient {
 	public static final String USERNAME_DEFAULT = "user";
 	public static final String PASSWORD_DEFAULT = "user";
 	
-	public static void main(String[] args) throws Exception {
+	public static void main(final String[] args) throws Exception {
 		if (args.length < 4) {
 			System.out.println("usage: JDBCClient <host> <port> <vdb> <sql-command>");
 			System.exit(-1);
 		}
-
-		System.out.println("Executing using the TeiidDriver");
-		boolean isSelect = execute(getDriverConnection(args[0], args[1], args[2]), args[3]);
-
-		if (isSelect) {
-			System.out.println("-----------------------------------");
-			System.out.println("Executing using the TeiidDataSource");
-			// this is showing how to make a Data Source connection. 
-			execute(getDataSourceConnection(args[0], args[1], args[2]), args[3]);
+		
+		System.out.println("Executing using the TeiidDataSource");
+		// this is showing how to make a Data Source connection. 
+		
+		ExecutorService executorService = Executors.newSingleThreadExecutor();
+		
+		Callable c = new Callable(){
+				public Connection call() throws Exception {
+					System.out.println("In call");
+					TeiidDataSource ds = new TeiidDataSource();
+					ds.setDatabaseName(args[2]);
+					ds.setUser(getUserName());
+					ds.setPassword(getPassword());
+					ds.setServerName(args[0]);
+					ds.setPortNumber(Integer.valueOf(args[1]));
+		
+					ds.setShowPlan("on"); //turn show plan on
+		                        System.out.println("pre ps.getConnection");  
+					return ds.getConnection();
+					
+				}
+		};
+		
+		Future future = executorService.submit(c);
+		
+		Connection cn = null;
+		
+                try {
+                  cn =(Connection) future.get(500, TimeUnit.MILLISECONDS);
+                } catch (Exception e){
+                	e.printStackTrace();
+                	future.cancel(true); //this method will stop the running underlying task
+                }
+		
+                if (cn != null){
+                	System.out.println("future not null");
+                	execute(cn, args[3]);
 		}
-	}
-	
-	static Connection getDriverConnection(String host, String port, String vdb) throws Exception {
-		String url = "jdbc:teiid:"+vdb+"@mm://"+host+":"+port+";showplan=on"; //note showplan setting
-		Class.forName("org.teiid.jdbc.TeiidDriver");
 		
-		return DriverManager.getConnection(url,getUserName(), getPassword());		
 	}
-	
-	static Connection getDataSourceConnection(String host, String port, String vdb) throws Exception {
-		TeiidDataSource ds = new TeiidDataSource();
-		ds.setDatabaseName(vdb);
-		ds.setUser(getUserName());
-		ds.setPassword(getPassword());
-		ds.setServerName(host);
-		ds.setPortNumber(Integer.valueOf(port));
-		
-		ds.setShowPlan("on"); //turn show plan on
-		
-		return ds.getConnection();
-	}
-	
+
 	static String getUserName() {
 		return (System.getProperties().getProperty(USERNAME) != null ? System.getProperties().getProperty(USERNAME) : USERNAME_DEFAULT );
 	}
@@ -118,6 +134,7 @@ public class JDBCClient {
 			return hasRs;
 		} catch (SQLException e) {
 			e.printStackTrace();
+			return false;
 		} finally {
 			if (connection != null) {
 				connection.close();
